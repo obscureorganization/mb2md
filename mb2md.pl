@@ -5,6 +5,12 @@
 # mb2md-3.20.pl      Converts Mbox mailboxes to Maildir format.
 #
 
+# !!!! This version of mb2md.pl has been modified by The Obscure Organization
+# !!!! to aid in its mail conversion from mbox to maildir.
+# !!!! Send questions about the '-t' switch to:
+# !!!! Richard Bullington-McGuire <rbulling@obscure.org> 
+# !!!! @obscurerichard on twitter and github
+#
 # !! This is a version modified for Dovecot. Use Dovecot mailing list
 # !! <dovecot@dovecot.org> for questions, patches, etc. You don't have to be
 # !! subscribed to send mail there. Do not send mail directly to people
