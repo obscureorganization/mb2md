@@ -140,9 +140,9 @@
 #
 #
 # mb2md -h
-# mb2md [-c] [-K] [-U|-u] [-S] [-W] -m [-d destdir]
-# mb2md [-c] [-K] [-U|-u] [-S] [-W] -s sourcefile [-d destdir]
-# mb2md [-c] [-K] [-U|-u] [-S] [-W] -s sourcedir [-l wu-mailboxlist] [-R|-f somefolder] [-d destdir] [-r strip_extension]
+# mb2md [-c] [-K] [-U|-u] [-S] [-t] [-W] -m [-d destdir]
+# mb2md [-c] [-K] [-U|-u] [-S] [-t] [-W] -s sourcefile [-d destdir]
+# mb2md [-c] [-K] [-U|-u] [-S] [-t] [-W] -s sourcedir [-l wu-mailboxlist] [-R|-f somefolder] [-d destdir] [-r strip_extension]
 #
 #  -c            use the Content-Length: headers (if present) to find the
 #                beginning of the next message
@@ -181,6 +181,11 @@
 #                I think Dovecot always uses this but not sure about Courier.
 #                For Exim, see the quota_size_regex and maildir_tag config
 #                statements.
+#
+#  -t            Name the converted mail files using a timestamp derived
+#                from the envelope dates. Using this will preserve the
+#                arrival order of the messages with some mail clients,
+#                including alpine and the iOS 4.x Mail application.
 #
 #  -W            Add ,W= tag to the message filename indicating the RFC822.SIZE
 #                of the message. This is the size of the message when actually
@@ -464,13 +469,13 @@ use Fcntl;
 sub usage() {
     print "Usage:\n";
     print "       mb2md -h\n";
-    print "       mb2md [-c] [-K] [-U|-u] [-S] [-W] -m [-d destdir]\n";
-    print "       mb2md [-c] [-K] [-U|-u] [-S] [-W] -s sourcefile [-d destdir]\n";
-    die   "       mb2md [-c] [-K] [-U|-u] [-S] [-W] -s sourcedir [-l wu-mailboxlist] [-R|-f somefolder] [-d destdir] [-r strip_extension]\n";
+    print "       mb2md [-c] [-K] [-U|-u] [-S] [-t] [-W] -m [-d destdir]\n";
+    print "       mb2md [-c] [-K] [-U|-u] [-S] [-t] [-W] -s sourcefile [-d destdir]\n";
+    die   "       mb2md [-c] [-K] [-U|-u] [-S] [-t] [-W] -s sourcedir [-l wu-mailboxlist] [-R|-f somefolder] [-d destdir] [-r strip_extension]\n";
 }
 		    # get options
 my %opts;
-getopts('d:f:chms:r:l:RUuKSW', \%opts) || usage();
+getopts('d:f:chms:r:l:RUuKStW', \%opts) || usage();
 usage() if ( defined($opts{h})
 	|| (!defined($opts{m}) && !defined($opts{s})) );
 
@@ -485,6 +490,7 @@ my $mbfile = undef;	# this is an mbox file
 my $dest = undef;
 my $strip_ext = undef;
 my $use_cl = undef;	# defines whether we use the Content-Length: header if present
+my $use_file_ts_in_names = 0; # defines whether we use the message timestamp as part of generated filenames or not
 my $create_dovecot_keywords = 0; # defines whether we generate a Dovecot-compatible keywords file
 my $create_dovecot_uidlist = 0;	# defines whether we generate a Dovecot-compatible uidlist UID file
 my $create_courier_uidlist = 0;	# defines whether we generate a Courier IMAP-compatible courierimapuiddb UID file
@@ -511,6 +517,11 @@ if (defined($opts{U}) && defined($opts{u}))
 if (defined($opts{K}))
 {
 	$create_dovecot_keywords = 1;
+}
+
+if (defined($opts{t}))
+{
+	$use_file_ts_in_names = 1;
 }
 
 # if option "-U" is given, we will generate a Dovecot-compatible
@@ -1051,6 +1062,12 @@ sub convert
                     # numeric time in seconds since 1970.
         my $unique = time;
 
+
+                    # If we get to
+                    # each message.  Initialise it here with
+                    # numeric time in seconds since 1970.
+        my $filebase = sprintf "%d", $unique;
+
                     # Name of message file to delete if we found that
                     # it was created by reading the Mbox dummy message.
 
@@ -1216,6 +1233,10 @@ sub convert
 			my $t = str2time($receivedate);
 			if (defined($t))
 			{
+				if ($use_file_ts_in_names) {
+					$filebase = sprintf "%d-%d", $t, $unique;
+				}
+
 				utime $t, $t, $messagefn;
 			} else {
 				printf("WARNING: Unable to parse date for msg %d of %s\n", $messagecount, $mbox);
@@ -1556,7 +1577,7 @@ sub convert
                             # To do this, use sprintf instead with "%06d" for
                             # 6 characters of zero-padding:
 
-            		$messagefn = sprintf ("cur/%d.%06d.mbox:2,", $unique, $messagecount) ;
+            		$messagefn = sprintf ("cur/%s.%06d.mbox:2,", $filebase, $messagecount) ;
 
 			    # If the message has not been flagged as Opened
 			    # then it should be put in the new/ folder. This
