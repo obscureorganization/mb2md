@@ -4,6 +4,12 @@
 #
 # mb2md-3.20.pl      Converts Mbox mailboxes to Maildir format.
 #
+
+# !! This is a version modified for Dovecot. Use Dovecot mailing list
+# !! <dovecot@dovecot.org> for questions, patches, etc. You don't have to be
+# !! subscribed to send mail there. Do not send mail directly to people
+# !! listed below.
+
 # Public domain.
 #
 # currently maintained by:
@@ -82,6 +88,24 @@
 #
 #            Michael Best originally integrated those changes into mb2md.
 #
+#   UIDs (Dovecot and Courier)
+#            Using the -U or -u options will cause this program to maintain
+#            UIDVALIDITY and UIDLAST for folders and UIDs for individual
+#            messages. The X-IMAP:, X-IMAPbase:, and X-UID: headers are
+#            examined and appropriate files generated for Dovecot or Courier
+#            in the destination Maildir to ensure these values are all kept.
+#
+#      UID support added by Julian Fitzell <jfitzell@gmail.com> June, 2008
+#
+#   Message Keywords (Dovecot only)
+#            Using the -K option will cause this program to maintain message
+#            keywords (also known by other names such as tags). This is
+#            currently only supported for Dovecot and involves looking at
+#            the X-IMAP:, X-IMAPbase:, and X-Keywords: headers. The keywords
+#            are written to a file in the Maildir which maps them to flags.
+#            The flags are then appended the message filenames.
+#
+#      Keyword support added by Julian Fitzell <jfitzell@gmail.com> June, 2008
 #
 #   In addition, the names of the message files in the Maildir are of a
 #   regular length and are of the form:
@@ -93,6 +117,18 @@
 #   messages are converted from the Mbox file.  "xxx" represents zero or
 #   more of the above flags F, R, S or T.
 #
+# Message Size Tags
+#
+#   Additionally, there is optional support for including ,S= and ,W= tags
+#   before the colon. These message names are still valid Maildir filenames
+#   and the tags are used by mail programs to speed up calculation of quotas
+#   and the return of message sizes to IMAP clients. ,S= is part of the
+#   Maildir++ standard.
+#   (See: http://www.inter7.com/courierimap/README.maildirquota.html )
+#   As far as I can tell, ,W= is probably only used by Dovecot.
+#   (See: http://wiki.dovecot.org/MailboxFormat/Maildir )
+#
+#   Size Tags added by Julian Fitzell <jfitzell@gmail.com> June, 2008
 #
 # ---------------------------------------------------------------------
 #
@@ -104,15 +140,53 @@
 #
 #
 # mb2md -h
-# mb2md [-c] -m [-d destdir]
-# mb2md [-c] -s sourcefile [-d destdir]
-# mb2md [-c] -s sourcedir [-l wu-mailboxlist] [-R|-f somefolder] [-d destdir] [-r strip_extension]
+# mb2md [-c] [-K] [-U|-u] [-S] [-W] -m [-d destdir]
+# mb2md [-c] [-K] [-U|-u] [-S] [-W] -s sourcefile [-d destdir]
+# mb2md [-c] [-K] [-U|-u] [-S] [-W] -s sourcedir [-l wu-mailboxlist] [-R|-f somefolder] [-d destdir] [-r strip_extension]
 #
 #  -c            use the Content-Length: headers (if present) to find the
 #                beginning of the next message
 #                Use with caution! Results may be unreliable. I recommend to do
 #                a run without "-c" first and only use it if you are certain,
 #                that the mbox in question really needs the "-c" option
+#
+#  -K            Preserve message keywords in a Dovecot-compatible way. This
+#                looks for X-Keywords: tags and X-IMAP: and X-IMAPbase: tags
+#                to determine keywords for messages and creates a Dovecot-
+#                compatible "dovecot-keywords" file in "destdir"
+#                NOTE: NO LOCKING IS DONE AND THE FILE MUST NOT ALREADY EXIST.
+#                 IF YOU USE THIS OPTION ON A MAILDIR THAT MAY BE ACCESSED BY
+#                 ANOTHER PROGRAM AT THE SAME TIME, STRANGE THINGS MAY HAPPEN.
+#
+#  -U            Preserve message UIDs in a Dovecot-compatible way
+#                Looks for X-UID:, X-IMAP:, and X-IMAPbase: headers and
+#                creates a Dovecot-compatible dovecot-uidlist file in
+#                "destdir"
+#                NOTE: NO LOCKING IS DONE AND THE FILE MUST NOT ALREADY EXIST.
+#                 IF YOU USE THIS OPTION ON A MAILDIR THAT MAY BE ACCESSED BY
+#                 ANOTHER PROGRAM AT THE SAME TIME, STRANGE THINGS MAY HAPPEN.
+#
+#  -u            Same as -U above, except creates a Courier IMAP-compatible
+#                courierimapuiddb file instead. The only difference according
+#                to http://wiki.dovecot.org/MailboxFormat/Maildir is that
+#                Courier IMAP only stores the maildir file's basename
+#                (everything before the colon)
+#                NOTE: NO LOCKING IS DONE AND THE FILE MUST NOT ALREADY EXIST.
+#                 IF YOU USE THIS OPTION ON A MAILDIR THAT MAY BE ACCESSED BY
+#                 ANOTHER PROGRAM AT THE SAME TIME, STRANGE THINGS MAY HAPPEN.
+#
+#  -S            Add Maildir++ standard ,S= tag to the message filenames
+#                indicating the size of the message on disk. This can be used
+#                by Courier and Dovecot in calculating quotas.
+#                I think Dovecot always uses this but not sure about Courier.
+#                For Exim, see the quota_size_regex and maildir_tag config
+#                statements.
+#
+#  -W            Add ,W= tag to the message filename indicating the RFC822.SIZE
+#                of the message. This is the size of the message when actually
+#                sent to an IMAP client with LF characters converted to CRLF
+#                pairs as per the spec. Dovecot uses this to speed up returning
+#                these sizes. Not sure if any other applications use it.
 #
 #  -m            If this is used then the source will
 #                be the single mailbox at /var/spool/mail/blah for
@@ -390,13 +464,13 @@ use Fcntl;
 sub usage() {
     print "Usage:\n";
     print "       mb2md -h\n";
-    print "       mb2md [-c] -m [-d destdir]\n";
-    print "       mb2md [-c] -s sourcefile [-d destdir]\n";
-    die   "       mb2md [-c] -s sourcedir [-l wu-mailboxlist] [-R|-f somefolder] [-d destdir] [-r strip_extension]\n";
+    print "       mb2md [-c] [-K] [-U|-u] [-S] [-W] -m [-d destdir]\n";
+    print "       mb2md [-c] [-K] [-U|-u] [-S] [-W] -s sourcefile [-d destdir]\n";
+    die   "       mb2md [-c] [-K] [-U|-u] [-S] [-W] -s sourcedir [-l wu-mailboxlist] [-R|-f somefolder] [-d destdir] [-r strip_extension]\n";
 }
 		    # get options
 my %opts;
-getopts('d:f:chms:r:l:R', \%opts) || usage();
+getopts('d:f:chms:r:l:RUuKSW', \%opts) || usage();
 usage() if ( defined($opts{h})
 	|| (!defined($opts{m}) && !defined($opts{s})) );
 
@@ -411,6 +485,11 @@ my $mbfile = undef;	# this is an mbox file
 my $dest = undef;
 my $strip_ext = undef;
 my $use_cl = undef;	# defines whether we use the Content-Length: header if present
+my $create_dovecot_keywords = 0; # defines whether we generate a Dovecot-compatible keywords file
+my $create_dovecot_uidlist = 0;	# defines whether we generate a Dovecot-compatible uidlist UID file
+my $create_courier_uidlist = 0;	# defines whether we generate a Courier IMAP-compatible courierimapuiddb UID file
+my $note_message_size = 0;	# Whether we should add the ,S= message size tag
+my $note_rfc822_size = 0;	# Whether we should add the ,W= RFC822.SIZE tag
 
 # if option "-c" is given, we use the Content-Length: header if present
 # dangerous! may be unreliable, as the whole CL stuff is a bad idea
@@ -419,6 +498,43 @@ if (defined($opts{c}))
 	$use_cl = 1;
 } else {
 	$use_cl = 0;
+}
+
+# The -U and -u options cannot be specified together
+if (defined($opts{U}) && defined($opts{u}))
+{
+	die("Options -U and -u cannot be specified together");
+}
+
+# if option "-K" is given, we will generate a Dovecot-compatible
+# dovecot-keywords file in each Maildir
+if (defined($opts{K}))
+{
+	$create_dovecot_keywords = 1;
+}
+
+# if option "-U" is given, we will generate a Dovecot-compatible
+# dovecot-uidlist file in each Maildir
+if (defined($opts{U}))
+{
+	$create_dovecot_uidlist = 1;
+}
+
+# if option "-u" is given, we will generate a Courier IMAP-compatible
+# courierimapuiddb file in each Maildir
+if (defined($opts{u}))
+{
+	$create_courier_uidlist = 1;
+}
+
+if (defined($opts{S}))
+{
+	$note_message_size = 1;
+}
+
+if (defined($opts{W}))
+{
+	$note_rfc822_size = 1;
 }
 
 # first, if the user has gone the -m option
@@ -649,8 +765,13 @@ sub convertit
 	# source dir
 	my $srcdir="$mbroot/$oldpath/$dir";
 
-	printf("convertit(): Converting $dir in $mbroot/$oldpath to $dest/$destinationdir\n");
+	print("convertit(): Converting $dir in $mbroot/$oldpath to $dest/$destinationdir\n");
 	&maildirmake("$dest/$destinationdir");
+
+	# Subfolders are Maildir++ folders and should be marked by the
+	# presence of an empty "maildirfolder" file
+	sysopen(F, "$dest/$destinationdir/maildirfolder", O_CREAT|O_WRONLY, 0600) && close F;
+
 	print("destination = $destinationdir\n");
 	if (-d $srcdir) {
 		opendir(SUBDIR, "$srcdir") or die "can't open $srcdir !\n";
@@ -670,7 +791,7 @@ sub convertit
 		if (!isamailboxfile("$mbroot/$oldpath/$dir"))
 		{
 			print "Skipping $dir (is not mbox)\n";
-			next;
+			return;
 		}
 
 		# target file verifs...
@@ -741,8 +862,8 @@ sub convert
 	# get the source and destination as arguments
 	my ($mbox, $maildir) = @_;
 
-	printf("Source Mbox is $mbox\n");
-        printf("Target Maildir is $maildir \n") ;
+	print("Source Mbox is $mbox\n");
+        print("Target Maildir is $maildir \n") ;
 
 	# create the directories for the new maildir
 	#
@@ -997,6 +1118,111 @@ sub convert
 			    # Since we initialise the variable to true,
 			    # we don't need to check for beginning of file.
 
+	            # The path to the UID list file
+	my $uidlistfile;
+	if ($create_dovecot_uidlist)
+	{
+		$uidlistfile = "${maildir}/dovecot-uidlist";
+	} else {
+		$uidlistfile = "${maildir}/courierimapuiddb";
+	}
+	            # Store the UIDVALIDITY and UIDLAST from the X-IMAP:
+	            # header
+	my $uidvalidity;
+	my $uidlast = 0;
+
+	            # Store the UID for the current message
+	my $uidcurr = 0;
+
+	            # Array to hold all the UIDs and filenames for outputing
+	            # into a uidlist file
+	my @uidlist;
+	my $douidlist = $create_dovecot_uidlist || $create_courier_uidlist;
+	if ($douidlist && scalar(stat($uidlistfile)))
+	{
+		$douidlist = 0;
+		printf("WARNING: Skipping UIDs for this folder. %s already exists.\n", $uidlistfile);
+	}
+
+	            # The path to the Dovecot keywords list
+	my $keywordsfile = "$maildir/dovecot-keywords";
+	            # Hash to hold a list of all valid keywords for the folder.
+	            # We use a hash to make looking up keywords in there fast.
+	my %validkeywords;
+	            # A list of already encountered keys. The index of each key
+	            # is used when generating message filenames and they get
+	            # written to the dovecot-keywords file. We also have a
+	            # hash that maps from the keyword to the array index to
+	            # facilitate checking if we already have an index for the
+	            # keyword
+	my @keywords;
+	my %keywordshash;
+
+	            # List of keyword flags used by Dovecot. The dovecot-keyword
+	            # file maintains a 0-based index of keywords in use in the
+	            # folder. The message filenames use the flags a-z to mark
+	            # messages as having keywords (a=0, b=1, etc). Note that
+	            # this means Dovecot only supports 26 different keywords
+	            # per mail folder. This array maps the numeric indexes to
+	            # the letter flags (in case Dovecot begins to use other 
+	            # flags in the future).
+	my @keywordflags = ('a'..'z');
+
+	            # Store the keyword header found for the current message
+	my $messagekeywords;
+
+	            # If there already exists a dovecot-keywords file then
+	            # we can't deal with keywords even if the user wants us to.
+	            # It's not technically impossible, just more than this code
+	            # can be bothered to deal with.
+	my $dokeywords = $create_dovecot_keywords;
+	if ($dokeywords && scalar(stat($keywordsfile)))
+	{
+		$dokeywords = 0;
+		printf("WARNING: Skipping keywords for this folder. %s already exists.\n", $keywordsfile);
+	}
+
+	my $postclose = sub
+	{
+		if ($messagefn ne '' && $messagefn ne $deletedummy)
+		{
+			if ($note_message_size || $note_rfc822_size)
+			{
+				my $params = "";
+				my $realsize = -s $messagefn;
+
+				if ($note_message_size)
+				{
+					$params .= ",S=$realsize";
+				}
+
+				if ($note_rfc822_size && open(MSG, "<$messagefn"))
+				{
+					my $lfs = 0;
+					my $line;
+					while ($line = <MSG>)
+					{
+						$lfs += ($line =~ m/(?<!\r)\n/gs);
+					}
+					close(MSG);
+					$params .= ",W=" . ($realsize + $lfs);
+				}
+				my $oldfn = $messagefn;
+				$messagefn =~ s/:/$params:/;
+				rename($oldfn, $messagefn);
+				$uidlist[-1] =~ s/:/$params:/;
+			}
+
+			my $t = str2time($receivedate);
+			if (defined($t))
+			{
+				utime $t, $t, $messagefn;
+			} else {
+				printf("WARNING: Unable to parse date for msg %d of %s\n", $messagecount, $mbox);
+			}
+		}
+	};
+
         while(<MBOX>)
         {
                             # exchange possible Windows EOL (CRLF) with Unix EOL (LF)
@@ -1013,6 +1239,16 @@ sub convert
                             # the end of the headers.
 
                 $inheaders = 1;
+
+		            # In case we don't find an X-UID: header, set
+		            # the UID for the current message to 1 higher
+		            # than the previous message
+		$uidcurr += 1;
+
+		            # This is a new message so we need to undefine
+		            # the message keyword header before looking at
+		            # the new message (which may not have one)
+		undef($messagekeywords);
 
                             # record the message start line
 
@@ -1034,10 +1270,7 @@ sub convert
                             # Mbox file.
 
                     close (OUT);
-		    if ($messagefn ne '') {
-			my $t = str2time($receivedate);
-			utime $t, $t, $messagefn;
-		    }
+		    &$postclose();
                 }
 
                             # Because we opened the Mbox file without any
@@ -1146,7 +1379,14 @@ sub convert
 			    #
 			    # FIXME: all those regexp should be combined to just one single one
 
-		$fromline =~ s/(\((\S*| )+\)|\S+) *//;
+		# If the first character is a quote, remove everything up to
+		#  the next quote.
+		if ($fromline =~ m/^\s*"/)
+		{
+			$fromline =~ s/"[^"]*"//;
+		} else {
+			$fromline =~ s/(\((\S*| )+\)|\S+) *//;
+		}
 
 		chomp $fromline;
 
@@ -1189,8 +1429,60 @@ sub convert
                             #
                             # Delete the "unless ($_ eq "\n")" to get rid
                             # of this kludge.
+	                    #
+	                    # Don't copy status headers, etc. if we've used
+	                    # the info in them already for something.
 
-                $headers .= $_ unless ($_ eq "\n");
+                $headers .= $_ unless ( ($_ eq "\n") ||
+					(/^Status: /) ||
+					(/^X-Status: /) ||
+					(/^X-Mozilla-Status: /i) ||
+					(/^X\-Evolution:\s+/oi) ||
+					(/^X-IMAP(?:base)?: /) ||
+					(/^X-UID: /) ||
+					(/^X-Keywords:\s+/));
+
+		if (/^X-IMAP(?:base)?: (\d+)\s+(\d+)\s*([^\s].*)?\s*$/)
+		{
+			if (defined($uidvalidity))
+			{
+				printf("WARNING: Second X-IMAP: header found. Ignoring it (line %d, msg %d).\n", $., $messagecount);
+			} else {
+				$uidvalidity = $1;
+				$uidlast = $2;
+			}
+
+			            # Valid keywords for the mailbox are stored
+			            # in the X-IMAP: or X-IMAPbase: header. Any
+			            # keywords in messages that are not in this
+			            # list should be ignored
+			if (defined($3))
+			{
+				foreach my $keyword (split(/\s+/, $3))
+				{
+					$validkeywords{$keyword} = 1;
+				}
+			}
+		}
+
+		if (/^X-UID: (\d+)/)
+		{
+			# UIDs must increase; we must have a UID at least 1
+			# greater than the previous message
+			if ($1 < $uidcurr)
+			{
+				printf("WARNING: UID from X-UID: header too low. Ignoring it (line %d, msg %d).\n", $., $messagecount);
+			} else {
+				$uidcurr = $1;
+			}
+		}
+
+		if (/^X-Keywords:\s+(.*)\s*$/)
+		{
+			# Grab the keywords for use when we generate the
+			# message filename below
+			$messagekeywords = $1;
+		}
 
                             # Now scan the line for various status flags
                             # and to fine the Subject line.
@@ -1266,6 +1558,11 @@ sub convert
 
             		$messagefn = sprintf ("cur/%d.%06d.mbox:2,", $unique, $messagecount) ;
 
+			    # If the message has not been flagged as Opened
+			    # then it should be put in the new/ folder. This
+			    # Works with Exim/UW-IMAP folders but is otherwise
+			    # untested.
+			$messagefn =~ s/^cur/new/ unless $flags =~ /O/;
 
                             # Append flag characters to the end of the
                             # filename, according to flag characters
@@ -1276,6 +1573,38 @@ sub convert
                     $messagefn .= 'S' if $flags =~ /R/; # Seen or Read.
                     $messagefn .= 'T' if $flags =~ /D/; # Tagged for deletion.
 
+		            # If the user has asked us to generate Dovecot-
+		            # compatible keyword listings, let's give it a go
+		    if ($dokeywords &&
+			defined($messagekeywords) &&
+			scalar(keys(%validkeywords)))
+		    {
+			foreach my $keyword (split(/\s+/, $messagekeywords))
+			{
+			    # Only keywords listed in the X-IMAP(base): header
+			    # are valid for this folder
+			    next unless $validkeywords{$keyword};
+
+			    # Check if we've already used this keyword and
+			    # assigned it an index. Try to assign one if not
+			    unless (defined($keywordshash{$keyword}))
+			    {
+				unless (scalar(@keywords) < scalar(@keywordflags))
+				{
+				    printf("WARNING: Too many keywords (%d max). Ignoring keyword '%s' for message %d\n", scalar(@keywordflags), $keyword, $messagecount);
+				    next;
+				}
+
+				# Add the keyword to the array
+				push(@keywords, $keyword);
+				# Update the keyword to index hash
+				$keywordshash{$keyword} = scalar(@keywords)-1;
+			    }
+
+			    $messagefn .= $keywordflags[$keywordshash{$keyword}];
+			}
+		    }
+
 
                             # Opens filename $messagefn for output (>) with filehandle OUT.
 
@@ -1284,6 +1613,10 @@ sub convert
                             # Count the messages.
 
                     $messagecount++;
+
+		            # If the current UID is higher than UIDLAST, we
+		            # need to update UIDLAST
+		    $uidlast = $uidcurr if ($uidcurr > $uidlast);
 
                             # Only for the first message,
                             # check to see if it is a dummy.
@@ -1309,7 +1642,17 @@ sub convert
                             # can delete it later.
 
                         $deletedummy = "$messagefn";
-                    }
+
+		            # If there was a dummy message, we still want
+		            # the next message to be able to use UID 1
+		        $uidcurr = $uidlast = 0;
+                    } else {
+		            # If this is not a dummy message then store
+		            # the UID and message filename for outputing
+		            # into the uidlist file at the end (dropping
+		            # "cur/" from the beginning)
+		        push(@uidlist, "$uidcurr ". substr($messagefn, 4));
+		    }
 
                             # Print the collected headers to the message file.
 
@@ -1432,10 +1775,7 @@ sub convert
                             # the date-time of the most recent message file.
 
         close(OUT);
-        if ($messagefn ne '') {
-	    my $t = str2time($receivedate);
-	    utime $t, $t, $messagefn;
-	}
+	&$postclose();
 
                             # After all the messages have been
                             # converted, check to see if the
@@ -1451,6 +1791,65 @@ sub convert
             $messagecount--;
 
         }
+
+	            # If the user asked for a Dovecot keywords file and
+	            # we found any keywords in this folder then write
+	            # the file out.
+	if ($dokeywords && scalar(@keywords))
+	{
+
+		    # $dokeywords should be false if the file already exists
+		    # but we open it in O_EXCL mode to be sure.
+		    # NOTE: NO LOCKING IS PERFORMED so beware running this
+		    # on an active Maildir folder
+		if (sysopen(KEYWORDS, $keywordsfile, O_WRONLY|O_CREAT|O_EXCL, 0600))
+		{
+			for (my $i = 0;$i < scalar(@keywords);$i++)
+			{
+				printf(KEYWORDS "%d %s\n", $i, $keywords[$i]);
+			}
+			close(KEYWORDS);
+			printf("Created keywords list: %s\n", $keywordsfile);
+		}
+	}
+
+	            # If the user asked for a uidlist file
+	            # and we found an X-IMAP: or X-IMAPbase: header, then
+	            # let's generate the file.
+	if ($douidlist && defined($uidvalidity))
+	{
+		if ($create_courier_uidlist)
+		{
+			    # Courier IMAP only wants the basename of the
+			    # maildir file (up to the colon) so let's strip
+			    # the endings off.
+			grep(s/:.*$//,@uidlist);
+		}
+
+		            # If there's already a uid list file, we don't
+			    # know how to deal with the old UIDVALIDITY or
+			    # whether the UIDs from the incoming messages
+		            # are valid or unique. So we use O_EXCL and just
+		            # bail out if the file exists and let the mail
+		            # system update the index with new UIDs for
+		            # these messages
+		            # NOTE: NO LOCKING IS DONE SO DON'T RUN THIS ON
+		            # AN ACTIVE MAILDIR
+		if (sysopen(UIDLIST, $uidlistfile, O_WRONLY|O_CREAT|O_EXCL, 0600))
+		{
+			    # The first 1 is the file format version number
+			    # The second number is the UIDVALIDITY value
+			    # The last number is the next number to be given
+			    #  to a new message (one higher than UIDLAST)
+			printf(UIDLIST "1 %d %d\n", $uidvalidity, $uidlast+1);
+			print(UIDLIST join("\n", @uidlist));
+			print(UIDLIST "\n") if (scalar(@uidlist) > 0);
+			close(UIDLIST);
+			printf("Created UID list: %s\n", $uidlistfile);
+		} else {
+			printf("WARNING: Unable to create %s. Does it already exist?\n", $uidlistfile);
+		}
+	}
 
         printf("$messagecount messages.\n\n");
 }
